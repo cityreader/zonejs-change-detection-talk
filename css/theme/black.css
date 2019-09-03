@@ -271,3 +271,12 @@ body {
 @media print {
   .backgrounds {
     background-color: #191919; } }
+
+.text-inverse {
+  background: radial-gradient(black, transparent);
+}
+    
+.reveal h2,
+.reveal h3 {
+  text-transform: none;
+}

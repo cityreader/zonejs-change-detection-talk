@@ -25,8 +25,308 @@
 	<body>
 		<div class="reveal">
 			<div class="slides">
-				<section>Slide 1</section>
-				<section>Slide 2</section>
+				<section data-background-image="./images/dockland.png">
+					<img class="plain" src="./images/angular.svg" width="200px">
+					<h2 class="text-inverse">Zone.js and <br>Change detection in Angular</h2>
+					<p class="text-inverse"><small>Eric Chen</small></p>
+				</section>
+				<section>
+					<h2>A short description of Zone</h2>
+					<blockquote>A Zone is an execution context that persists across async tasks. You can think of it as thread-local storage for JavaScript VMs.</blockquote>
+				</section>
+				<section>
+					<section data-markdown style="width: 150%; transform: translateX(-16%);">
+						<script type="text/template">
+							## A long description of Zone
+```
+/**
+ * Zone is a mechanism for intercepting and keeping track of asynchronous work.
+ *
+ * A Zone is a global object which is configured with rules about how to intercept and keep track
+ * of the asynchronous callbacks. Zone has these responsibilities:
+ *
+ * 1. Intercept asynchronous task scheduling
+ * 2. Wrap callbacks for error-handling and zone tracking across async operations.
+ * 3. Provide a way to attach data to zones
+ * 4. Provide a context specific last frame error handling
+ * 5. (Intercept blocking methods)
+ */
+```
+						</script>
+					</section>
+					<section>
+						<h2>Asynchronise APIs</h2>
+						<h3>MicroTask</h3>
+						<p>Promise, MutationObserver</p>
+						<h3>MacroTask</h3>
+						<p>setTimeout, setImmediate, setInterval, requestAnimationFrame</p>
+						<h3>EventTask</h3>
+					</section>
+					<section>
+						<h2>Monkey-patch Promise in Zone.js</h2>
+						<div style="background: white;"><img class="plain" src="./images/monkey-patch-promise-in-zone-js.png"></div>
+					</section>
+					<section data-markdown style="width: 150%; transform: translateX(-16%);">
+						<script type="text/template">
+							## Fork a Zone and Add your custom rules
+```
+<button id="b2">Cause Error</button>
+<button id="b2">Cause Error</button>
+<script>
+function main () {
+  b1.addEventListener('click', bindSecondButton);
+}
+
+function bindSecondButton () {
+    b2.addEventListener('click', throwError);
+  }
+
+Zone.current.fork(
+	{
+		onHandleError: function (parentZoneDelegate, currentZone, targetZone, error) {
+			console.log(error.stack);
+		}
+	}
+).fork(Zone.longStackTraceZoneSpec).run(main);
+</script>
+```
+						</script>
+					</section>
+					<section data-markdown style="width: 150%; transform: translateX(-16%);">
+							<script type="text/template">
+								## ZoneSpec
+```
+interface ZoneSpec {
+  onFork();
+  onIntercept();
+  onInvoke();
+  onHandleError();
+  onScheduleTask();
+  onInvokeTask();
+  onCancelTask();
+  onHasTask();
+}
+```
+						</script>
+					</section>
+					<section>
+						<h2>Current Zone</h2>
+						<div>
+							<img class="plain" src="./images/fork-zone.png">
+						</div>
+						<pre >
+// In Zone 1
+setTimeout(callback, 1000);
+						</pre>
+					</section>
+				</section>
+				<section data-background-iframe="https://jakearchibald.com/2015/tasks-microtasks-queues-and-schedules/#why-this-happens" data-background-interactive>
+					<div style="position: absolute; width: 40%; right: 0; top: 10%; box-shadow: 0 1px 4px rgba(0,0,0,0.5), 0 5px 25px rgba(0,0,0,0.2); background-color: rgba(0, 0, 0, 0.9); color: #fff; padding: 20px; font-size: 20px; text-align: left;">
+						<h2>Event Loop Recap</h2>
+					</div>
+				</section>
+				<section>
+					<section data-markdown>
+						<script type="text/template">
+							### Event loop psudo code from Erin
+```
+while (true) {
+	queue = getNextQueue();
+	task = queue.pop();
+	execute(task);
+
+	while (microtaskQueue.hasTasks()) 
+	doMicrotask();
+
+	if (isRepaintTime()) {
+	animationTasks = animationQueue.copyTasks();
+	for (task in animationTasks) 
+	doAnimationTask(task);
+		
+	repaint();
+	}
+}
+
+```
+						</script>
+					</section>
+					<section data-markdown>
+						<script type="text/template">
+							### Event loop psudo code from Erin
+```
+while (true) {
+	queue = getNextQueue();
+	task = queue.pop();
+	execute(task);
+
+	while (microtaskQueue.hasTasks()) 
+	doMicrotask();
+
+	// -> Add change detection
+
+	if (isRepaintTime()) {
+	animationTasks = animationQueue.copyTasks();
+	for (task in animationTasks) 
+	doAnimationTask(task);
+		
+	repaint();
+	}
+}
+
+```
+						</script>
+					</section>
+				</section>
+				<section>
+					<section data-markdown style="width: 150%; transform: translateX(-16%);">
+							<script type="text/template">
+## NgZone
+```
+function forkInnerZoneWithAngularBehavior(zone: NgZonePrivate) {
+  zone._inner = zone._inner.fork({
+    name: 'angular',
+    properties: <any>{'isAngularZone': true},
+	onInvokeTask: (delegate: ZoneDelegate,
+					current: Zone, target: Zone,
+	 				task: Task, applyThis: any,
+                   	applyArgs: any): any => {
+      try {
+        onEnter(zone);
+        return delegate.invokeTask(target, task, applyThis, applyArgs);
+      } finally {
+        onLeave(zone);
+      }
+    },
+
+
+	onInvoke: (delegate: ZoneDelegate, current: Zone, target: Zone,
+	 			callback: Function,
+			   applyThis: any, 
+			   applyArgs?: any[], source?: string): any => {
+      try {
+        onEnter(zone);
+        return delegate.invoke(target, callback, applyThis, applyArgs, source);
+      } finally {
+        onLeave(zone);
+      }
+    },
+
+    onHasTask:
+		(delegate: ZoneDelegate, current: Zone, target: Zone, 
+		  hasTaskState: HasTaskState) => {
+          delegate.hasTask(target, hasTaskState);
+          if (current === target) {
+            // We are only interested in hasTask events which originate from our zone
+            // (A child hasTask event is not interesting to us)
+            if (hasTaskState.change == 'microTask') {
+              zone.hasPendingMicrotasks = hasTaskState.microTask;
+              checkStable(zone);
+            } else if (hasTaskState.change == 'macroTask') {
+              zone.hasPendingMacrotasks = hasTaskState.macroTask;
+            }
+          }
+        },
+
+	onHandleError: (delegate: ZoneDelegate, current: Zone, 
+	  target: Zone, error: any): boolean => {
+      delegate.handleError(target, error);
+      zone.runOutsideAngular(() => zone.onError.emit(error));
+      return false;
+    }
+  });
+}
+```
+						</script>
+					</section>
+					<section>
+						<h2>Auto change detection in Angular</h2>
+						<div>
+							<img class="plain" src="./images/auto-change-detection-in-angular.png">
+						</div>
+					</section>
+					<section data-markdown style="width: 150%; transform: translateX(-16%);">
+						<script type="text/template">
+## runOutsideAngular and run
+```
+export class NgZoneDemo {
+	progress: number = 0;
+	label: string;
+  
+	constructor(private _ngZone: NgZone) {}
+  
+	// Loop inside the Angular zone
+	// so the UI DOES refresh after each setTimeout cycle
+	processWithinAngularZone() {
+	  this.label = 'inside';
+	  this.progress = 0;
+	  this._increaseProgress(() => console.log('Inside Done!'));
+	}
+  
+	// Loop outside of the Angular zone
+	// so the UI DOES NOT refresh after each setTimeout cycle
+	processOutsideOfAngularZone() {
+	  this.label = 'outside';
+	  this.progress = 0;
+	  this._ngZone.runOutsideAngular(() => {
+		this._increaseProgress(() => {
+		  // reenter the Angular zone and display done
+		  this._ngZone.run(() => { console.log('Outside Done!'); });
+		});
+	  });
+	}
+  
+	_increaseProgress(doneCallback: () => void) {
+	  this.progress += 1;
+	  console.log(`Current progress: ${this.progress}%`);
+  
+	  if (this.progress < 100) {
+		window.setTimeout(() => this._increaseProgress(doneCallback), 10);
+	  } else {
+		doneCallback();
+	  }
+	}
+}
+# Ref https://angular.io/api/core/NgZone#runoutsideangular
+```
+						</script>
+					</section>
+				</section>
+				<section>
+					<section data-markdown style="width: 150%; transform: translateX(-16%);">
+						<script type="text/template">
+						## Noop Zone
+
+						Before
+```
+platformBrowserDynamic().bootstrapModule(AppModule)
+	.catch(err => console.error(err));
+```
+						After
+```
+platformBrowserDynamic().bootstrapModule(AppModule, {
+	ngZone: 'noop'
+  })
+	.catch(err => console.error(err));
+```
+						</script>
+					</section>
+					<section data-markdown>
+						<script type="text/template">
+```
+constructor(
+	private _ngZone: NgZone,
+	private appRef: ApplicationRef,
+	private cd: ChangeDetectorRef) {}
+	 
+this.cd.detectChanges();
+// this.appRef.tick();
+```
+						</script>
+					</section>
+				</section>
+				<section>
+					<h2>Questions</h2>
+				</section>
 			</div>
 		</div>
 
